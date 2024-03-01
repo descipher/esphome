@@ -1,0 +1,30 @@
+#pragma once
+#include <functional>
+#include <utility>
+#include <vector>
+
+namespace esphome {
+namespace gdo {
+
+    template <typename... X>
+    class OnceCallbacks;
+
+    template <typename... Ts>
+    class OnceCallbacks<void(Ts...)> {
+    public:
+        template <typename Callback>
+        void operator()(Callback&& callback) { this->callbacks_.push_back(std::forward<Callback>(callback)); }
+
+        void trigger(Ts... args)
+        {
+            for (auto& cb : this->callbacks_)
+                cb(args...);
+            this->callbacks_.clear();
+        }
+
+    protected:
+        std::vector<std::function<void(Ts...)>> callbacks_;
+    };
+
+} // namespace gdo
+} // namespace esphome
