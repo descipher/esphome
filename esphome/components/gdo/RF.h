@@ -1,154 +1,141 @@
 #pragma once
+#include "gdo.h"
+#include "esphome/core/gpio.h"
 #include "esphome/core/log.h"
+#include "esphome/core/scheduler.h"
 #include "esphome/core/helpers.h"
 #include "esphome/core/component.h"
 #include "esphome/core/hal.h"
 #include <esp_timer.h>
 
-#define ONE_SHOT_RX_TIME 375
-#define ONE_SHOT_TX_TIME 250
+#define RX_DELAY_TIME 375
+#define TX_DELAY_TIME 250
+#define PACKET_SIZE_BITS 40
+#define PREAMBLE_BITS 20
+#define PACKET_ID_BITS 2
 #define RF_PREABLE 0x0000FFFF  // Uses MSB to achieve a preamble of 00000000000000001111
 
 namespace esphome {
 namespace gdo {
 
-class RFTimer {
+static const uint8_t RF_PACKET_LENGTH = 4;
+typedef uint8_t RFPacket[RF_PACKET_LENGTH];
+
+class RF {
  public:
+  uint32_t preamble{RF_PREABLE};
   esp_timer_handle_t rxTimer;
   esp_timer_handle_t txTimer;
   esp_timer_create_args_t rxtimerConfig;
   esp_timer_create_args_t txtimerConfig;
-  uint32_t rx_delay_time{ONE_SHOT_RX_TIME};
-  uint32_t tx_delay_time{ONE_SHOT_TX_TIME};
-  uint32_t preamble{RF_PREABLE};
-  static constexpr const char *const TAG = "GDO.RF";
+  uint32_t rx_delay_time{RX_DELAY_TIME};
+  uint32_t tx_delay_time{TX_DELAY_TIME};
 
-  RFTimer() {
-    rxtimerConfig.arg = this;
-    rxtimerConfig.callback = reinterpret_cast<esp_timer_cb_t>(rx_pulse_cb);
-    rxtimerConfig.dispatch_method = ESP_TIMER_TASK;
-    rxtimerConfig.name = "rx_Timer";
-    esp_timer_create(&rxtimerConfig, &rxTimer);
-    txtimerConfig.arg = this;
-    txtimerConfig.callback = reinterpret_cast<esp_timer_cb_t>(tx_pulse_cb);
-    txtimerConfig.dispatch_method = ESP_TIMER_TASK;
-    txtimerConfig.name = "tx_Timer";
-    esp_timer_create(&txtimerConfig, &txTimer);
+  volatile bool rf_tx_active;
+  static constexpr const char *const TAG = "gdo.rf";
+
+  void init_rf_timer() {
+    this->txtimerConfig.arg = this;
+    this->txtimerConfig.callback = reinterpret_cast<esp_timer_cb_t>(tx_pulse_cb);
+    this->txtimerConfig.dispatch_method = ESP_TIMER_TASK;
+    this->txtimerConfig.name = "txTimer";
+    esp_timer_create(&this->txtimerConfig, &this->txTimer);
+  }
+  static void rx_pulse_cb(RF *arg) {
+    esp_timer_stop(arg->rxTimer);
+    bool value = arg->rf_rx_pin_->digital_read();
+    arg->rf_rx_data_[0] <<= 1;
+    arg->rf_rx_data_[0] |= value ? 1 : 0;
+    arg->bit_pos_++;
   }
 
-  static void rx_pulse_cb(void *arg) {
-    RFTimer *obj = (RFTimer *) arg;
-    obj->rx_pulse();
-  }
+  static void tx_pulse_cb(RF *arg) { arg->tx_packet(); }
 
-  static void tx_pulse_cb(void *arg) {
-    RFTimer *obj = (RFTimer *) arg;
-    obj->tx_pulse();
-  }
-
-  void start_rx_timer() { esp_timer_start_once(rxTimer, rx_delay_time); }
-  void start_tx_timer() { esp_timer_start_periodic(txTimer, tx_delay_time); }
+  void start_rx_timer() { esp_timer_start_once(this->rxTimer, this->rx_delay_time); }
+  void start_tx_timer() { esp_timer_start_periodic(this->txTimer, this->tx_delay_time); }
+  void stop_rx_timer() { esp_timer_stop(this->rxTimer); }
+  void stop_tx_timer() { esp_timer_stop(this->txTimer); }
+  bool is_tx_active() { return esp_timer_is_active(this->txTimer); }
   void report_bits() { ESP_LOGD(TAG, "Bits: %d", this->bit_pos_); }
-  void set_rx_pin(InternalGPIOPin *pin) { rx_pin_ = pin; };
-  void set_tx_pin(InternalGPIOPin *pin) { tx_pin_ = pin; };
-  void send_rf_cmd(uint64_t rf_cmd) {
-    this->rf_tx_data_ = rf_cmd;
-    this->rf_tx_data_ <<= 40;
+  void set_rx_pin(InternalGPIOPin *pin) { rf_rx_pin_ = pin; };
+  void set_tx_pin(InternalGPIOPin *pin) { rf_tx_pin_ = pin; };
+  inline void send_rf_cmd(volatile RFPacket packet1, volatile RFPacket packet2, const uint8_t packet_size,
+                   const uint8_t size) {
+    this->packet_number_ = 0;
+    this->packet_delay_counter_ = 0;
+    this->packet_size_ = packet_size;
+    this->rf_tx_data_[0] = 0;
+    this->rf_tx_data_[1] = 0;
+
+    for (int i = 0; i < size; i++) {
+      this->rf_tx_data_[0] |= static_cast<uint64_t>(packet1[i]) << (8 * i);
+      this->rf_tx_data_[1] |= static_cast<uint64_t>(packet2[i]) << (8 * i);
+    }
     this->bit_pos_ = 0;
     this->clock_count_ = 0;
-    this->tx_pin_->digital_write(false);
-    delayMicroseconds(250);
+    this->rf_tx_pin_->digital_write(false);
     this->start_tx_timer();
+    this->rf_tx_active = true;
   }
 
-  void rx_pulse() {
-    // ESP_LOGD(TAG,"Pulse");
-    esp_timer_stop(rxTimer);
-    bool value = rx_pin_->digital_read();
-    this->rf_rx_data_ <<= 1;
-    this->rf_rx_data_ |= value ? 1 : 0;
-    this->bit_pos_++;
-    ESP_LOGD(TAG, "Pulse:%08X", this->rf_rx_data_);
-  }
-
-  void tx_pulse() {
+  inline void tx_packet() {
     bool value;
-    //  Skip the 1st 250us
     if (this->clock_count_ == 0) {
+      // Init clock counter to mid bit
       this->clock_count_++;
       return;
     }
 
-    if (this->bit_pos_ >=64) {
-      esp_timer_stop(txTimer);
-      ESP_LOGD(TAG,"       DataIn: %s",this->rf_data_bits.c_str());
-      ESP_LOGD(TAG,"ManchesterOut: %s",this->machester_bits.c_str());
-      this->rf_data_bits.clear();
-      this->machester_bits.clear();
-      return;
+    if (this->bit_pos_ > this->packet_size_ + PREAMBLE_BITS + PACKET_ID_BITS - 1) {
+      if (this->packet_number_ > 0) {
+        esp_timer_stop(txTimer);
+        this->rf_tx_active = false;
+        this->rf_tx_pin_->digital_write(false);
+        return;
+      } else {
+        if (this->packet_delay_counter_ > 120) {
+          this->packet_number_++;
+          this->bit_pos_ = 0;
+          this->clock_count_ = 0;
+          return;
+        }
+        this->rf_tx_pin_->digital_write(false);
+        this->packet_delay_counter_++;
+        return;
+      }
     }
 
-    if (this->bit_pos_ <= 20) {
+    if (this->bit_pos_ < 20) {
       value = (this->preamble >> (31 - this->bit_pos_)) & 1;
     } else {
-      value = (this->rf_tx_data_ >> (64 - (this->bit_pos_ - 20))) & 1;
+      if (this->bit_pos_ <  22) {
+        value = (this->packet_number_ >> (21 - this->bit_pos_)) & 1;
+      } else {
+        value = (this->rf_tx_data_[this->packet_number_] >> (63 - (this->bit_pos_) - 22)) & 1;
+      }
     }
 
     if ((this->clock_count_ % 2) != 0) {  // not mid bit?
-      this->tx_pin_->digital_write(!value);
-      this->machester_bits.append(!value ? "1" : "0");
-      this->rf_data_bits.append(value ? "1" : "0");
+      this->rf_tx_pin_->digital_write(!value);
     } else {
-      this->tx_pin_->digital_write(value);
-      this->machester_bits.append(!value ? "1" : "0");
+      this->rf_tx_pin_->digital_write(value);
       this->bit_pos_++;
     }
-    clock_count_++;
-  }
-
-
-  void tx_data(uint32_t rf_data, uint8_t bits) {
-
-    // int8_t encode_v2(const uint32_t rolling, const uint64_t fixed, uint32_t data,
-    //             const uint8_t frame_type, uint8_t *packet1, uint8_t *packet2)
-    encode_v2(rolling, fixed, data, frame_type, &packet1, &packet2);
-
-    //  Skip the 1st 250us
-    if (this->clock_count_ == 0) {
-      this->clock_count_++;
-      return;
-    }
-
-    if (this->bit_pos_ >= bits) {
-      esp_timer_stop(txTimer);
-      ESP_LOGD(TAG,"       DataIn: %s",this->rf_data_bits.c_str());
-      ESP_LOGD(TAG,"ManchesterOut: %s",this->machester_bits.c_str());
-      return;
-    }
-
-    const bool value = (this->rf_tx_data_ >> this->bit_pos_) & 1;
-
-    if ((this->clock_count_ % 2) != 0) {  // not mid bit?
-      this->tx_pin_->digital_write(value);
-      this->machester_bits.append(value ? "1" : "0");
-      this->rf_data_bits.append(value ? "1" : "0");
-    } else {
-      this->tx_pin_->digital_write(!value);
-      this->machester_bits.append(!value ? "1" : "0");
-      this->bit_pos_++;
-    }
-    clock_count_++;
+    this->clock_count_++;
   }
 
  protected:
-  uint8_t bit_pos_{0};
-  InternalGPIOPin *rx_pin_;
-  InternalGPIOPin *tx_pin_;
-  uint64_t rf_rx_data_{0};
-  uint64_t rf_tx_data_{0};
-  uint8_t clock_count_{0};
+  volatile uint8_t bit_pos_{0};
+  InternalGPIOPin *rf_rx_pin_;
+  InternalGPIOPin *rf_tx_pin_;
+  volatile uint64_t rf_rx_data_[2];
+  volatile uint64_t rf_tx_data_[2];
+  volatile uint16_t clock_count_{0};
   uint8_t packet1[16];
   uint8_t packet2[16];
+  uint8_t packet_number_{0};
+  uint8_t packet_size_{40};
+  uint16_t packet_delay_counter_{0};
   std::string machester_bits;
   std::string rf_data_bits;
 };
@@ -189,6 +176,5 @@ class Manchester {
 //     arg->rx_bits++;
 //   }
 // };
-
 }  // namespace gdo
 }  // namespace esphome

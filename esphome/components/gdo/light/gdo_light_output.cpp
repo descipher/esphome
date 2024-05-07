@@ -1,5 +1,5 @@
 #include "gdo_light_output.h"
-#include "../gdo_state.h"
+#include "../gdo_states.h"
 #include "esphome/core/log.h"
 
 namespace esphome {

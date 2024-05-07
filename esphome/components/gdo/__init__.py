@@ -109,11 +109,11 @@ async def to_code(config):
         repository="https://github.com/descipher/espsoftwareserial",
         version=None,
     )
-    cg.add_library(
-        name="arduino-esp32",
-        repository="https://github.com/espressif/arduino-esp32",
-        version="3.0.0",
-    )
+    # cg.add_library(
+    #     name="arduino-esp32",
+    #     repository="https://github.com/espressif/arduino-esp32",
+    #     version="3.0.0",
+    # )
 
     if config[CONF_PROTOCOL] == PROTOCOL_SECPLUSV1:
         cg.add_define("PROTOCOL_SECPLUSV1")

@@ -17,7 +17,6 @@
 #include "listeners.h"
 #include "protocol.h"
 #include "gdo_states.h"
-#include "RF.h"
 
 #define ESP_LOG1 ESP_LOGV
 #define ESP_LOG2 ESP_LOGV
@@ -34,8 +33,6 @@ namespace esphome
         const float DOOR_POSITION_UNKNOWN = -1.0;
         const float DOOR_DELTA_UNKNOWN = -2.0;
         const uint16_t PAIRED_DEVICES_UNKNOWN = 0xFF;
-        static const uint8_t RF_PACKET_LENGTH = 19;
-        typedef uint8_t RFPacket[RF_PACKET_LENGTH];
 
         struct GDOStore
         {
@@ -49,10 +46,9 @@ namespace esphome
 
         struct RFStore
         {
-            RFTimer rf_timer;
-            static void IRAM_ATTR HOT rx_isr_bits(RFStore *arg)
+            static void IRAM_ATTR HOT rf_isr(RFStore *arg)
             {
-                arg->rf_timer.start_rx_timer();
+                //arg->rf_protocol.start_rx_timer();
             }
         };
 
@@ -196,6 +192,7 @@ namespace esphome
             void subscribe_motion_state(std::function<void(MotionState)> &&f);
             void subscribe_sync_failed(std::function<void(bool)> &&f);
             void subscribe_learn_state(std::function<void(LearnState)> &&f);
+            RFStore rf_isr_store;
 
         protected:
 
@@ -203,9 +200,7 @@ namespace esphome
             bool obstruction_from_status_{false};
             bool wire_tx_pending_{false};
             bool rf_rx_packet_pending_{false};
-            RFPacket rf_tx_packet_;
             GDOStore isr_store_{};
-            RFStore rf_isr_store_;
             InternalGPIOPin *output_gdo_pin_{nullptr};
             InternalGPIOPin *input_gdo_pin_{nullptr};
             InternalGPIOPin *input_obst_pin_{nullptr};

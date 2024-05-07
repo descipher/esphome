@@ -52,20 +52,19 @@ namespace esphome
 
             if (this->rf_rx_pin_ != nullptr)
             {
-                this->rf_isr_store_.rf_timer.set_rx_pin(this->rf_rx_pin_);
                 this->rf_rx_pin_->setup();
-                this->rf_rx_pin_->to_isr();
+                // this->rf_rx_pin_->to_isr();
                 this->rf_rx_pin_->pin_mode(gpio::FLAG_INPUT | gpio::FLAG_PULLDOWN);
-                this->rf_rx_pin_->attach_interrupt(RFStore::rx_isr_bits, &this->rf_isr_store_, gpio::INTERRUPT_RISING_EDGE);
+                // this->rf_rx_pin_->attach_interrupt(RFStore::rf_isr, &this->rf_isr_store, gpio::INTERRUPT_RISING_EDGE);
             }
 
             if (this->rf_tx_pin_ != nullptr)
             {
-                this->rf_isr_store_.rf_timer.set_tx_pin(this->rf_tx_pin_);
                 this->rf_tx_pin_->setup();
                 this->rf_tx_pin_->pin_mode(gpio::FLAG_OUTPUT);
+                this->rf_tx_pin_->digital_write(false);
             }
-            this->protocol_->setup(this, &App.scheduler, this->input_gdo_pin_, this->output_gdo_pin_);
+            this->protocol_->setup(this, &App.scheduler, this->input_gdo_pin_, this->output_gdo_pin_, this->rf_rx_pin_, this->rf_tx_pin_);
 
             // many things happening at startup, use some delay for sync
             set_timeout(SYNC_DELAY, [=]

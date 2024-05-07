@@ -210,7 +210,7 @@ namespace esphome
             class Protocol
             {
             public:
-                virtual void setup(GDOComponent *gdo, Scheduler *scheduler, InternalGPIOPin *rx_pin, InternalGPIOPin *tx_pin);
+                virtual void setup(GDOComponent *gdo, Scheduler *scheduler, InternalGPIOPin *rx_pin, InternalGPIOPin *tx_pin, InternalGPIOPin* rf_rx_pin, InternalGPIOPin* rf_tx_pin);
                 virtual void loop();
                 virtual void dump_config();
 
